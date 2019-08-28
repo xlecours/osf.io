@@ -7,6 +7,8 @@ import uuid
 from copy import deepcopy
 from os.path import splitext
 
+from past.builtins import basestring
+
 from flask import Request as FlaskRequest
 from framework import analytics
 from guardian.shortcuts import get_perms
@@ -376,6 +378,10 @@ class OSFUser(DirtyFieldsMixin, GuidMixin, BaseModel, AbstractBaseUser, Permissi
 
     # whether the user has requested to deactivate their account
     requested_deactivation = models.BooleanField(default=False)
+
+    # whether the user has who requested deactivation has been contacted about their pending request. This is reset when
+    # requests are canceled
+    contacted_deactivation = models.BooleanField(default=False)
 
     affiliated_institutions = models.ManyToManyField('Institution', blank=True)
 
@@ -1803,6 +1809,26 @@ class OSFUser(DirtyFieldsMixin, GuidMixin, BaseModel, AbstractBaseUser, Permissi
             self.external_accounts.clear()
         self.external_identity = {}
         self.deleted = timezone.now()
+
+    @property
+    def has_resources(self):
+        """
+        This is meant to determine if a user has any resources, nodes, preprints etc that might impede their deactivation.
+        If a user only has no resources or only deleted resources this will return false and they can safely be deactivated
+        otherwise they must delete or transfer their outstanding resources.
+
+        :return bool: does the user have any active node, preprints, groups, quickfiles etc?
+        """
+        from osf.models import Preprint
+
+        # TODO: Update once quickfolders in merged
+
+        nodes = self.nodes.exclude(type='osf.quickfilesnode').exclude(is_deleted=True).exists()
+        quickfiles = self.nodes.get(type='osf.quickfilesnode').files.exists()
+        groups = self.osf_groups.exists()
+        preprints = Preprint.objects.filter(_contributors=self, ever_public=True, deleted__isnull=True).exists()
+
+        return groups or nodes or quickfiles or preprints
 
     class Meta:
         # custom permissions for use in the OSF Admin App
